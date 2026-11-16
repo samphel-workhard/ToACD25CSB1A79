@@ -11,5 +11,8 @@ temp_source.cpp
 system_interactions.json
 powermetrics_log.txt
 24CSB0A58_CD_Final_Codes (Unzipped Files)/
+TOACD-project-25CSB1A79/
+data/*.db
+*.db
 
 __pycache__/

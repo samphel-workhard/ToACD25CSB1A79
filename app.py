@@ -3,16 +3,26 @@ import subprocess
 import requests
 import os
 import time
+import difflib
 
 from codecarbon import EmissionsTracker
-# Import our custom modules
+
+# Custom modules for Samphel C++ Compiler & Debugger
 from fix_engine import validate_ai_fix
 from secure_scan import run_security_guardrail
+from agent_security import analyze_security_threat
 from error_classifier import classify_error, get_diagnostic_prompt
 from compiler_service import compile_and_run
-from audit_logger import log_interaction 
+from audit_logger import log_interaction, log_security_event
 from error_logger import log_error 
 from lldb_engine import agentic_debug_loop 
+from dashboard import render_dashboard
+from security_audit_ui import render_security_audit_logs
+from self_healing_ui import render_self_healing_lab
+from attack_vault_ui import render_attack_vault
+from system_status_ui import render_system_status
+from attack_vault import record_attack
+from self_healing_engine import generate_correlation_id
 
 # LLM config
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
@@ -55,12 +65,11 @@ def get_ai_explanation(prompt):
         return f"AI service timeout.\nThe request to Ollama took too long to complete."
     except Exception as e:
         return f"An unexpected error occurred while connecting to Ollama: {str(e)}"
+
 def stop_and_save_metrics(tracker, start_t):
-    """Stops the carbon tracker and saves metrics with an Apple M-Chip fallback."""
+    """Stops the carbon tracker and saves metrics with an Apple M-Chip / Failsafe fallback."""
     try:
         emissions_kg = tracker.stop()
-        
-        # If hardware security blocks it, fallback to safe defaults
         if emissions_kg is None:
             emissions_kg = 0.0
             energy = 0.0
@@ -73,23 +82,28 @@ def stop_and_save_metrics(tracker, start_t):
             "carbon": emissions_kg * 1000 # Convert to grams
         }
     except Exception as e:
-        # 🚨 THE FAILSAFE: If CodeCarbon crashes entirely on the M3 chip, 
-        # it will still display your exact latency and safe minimal energy values!
         st.session_state.green_metrics = {
             "latency": time.time() - start_t,
-            "energy": 0.001500,  # Safe presentation fallback
-            "carbon": 0.00050    # Safe presentation fallback
+            "energy": 0.001500,
+            "carbon": 0.00050
         }
         print(f"CodeCarbon Warning Caught: {e}")
 
-
-from dashboard import render_dashboard
-
-# --- UI CONFIGURATION ---
-st.set_page_config(page_title="AI C++ Debugger", layout="wide")
+# --- UI CONFIGURATION & NAVIGATION ---
+st.set_page_config(page_title="Samphel C++ Debugger & Self-Healing", layout="wide")
 
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Debugger", "Error Analytics Dashboard"])
+page = st.sidebar.radio(
+    "Go to", 
+    [
+        "🛠️ Compiler & Debugger",
+        "🧪 Self-Healing Lab",
+        "🛡️ Attack Vault",
+        "📊 Error Analytics Dashboard",
+        "📈 Security Audit & Metrics",
+        "⚙️ System & Ollama Status"
+    ]
+)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 AI Connection Status")
@@ -104,12 +118,24 @@ if st.sidebar.button("Check AI Connection"):
         else:
             st.sidebar.error(f"✗ Ollama Not Connected\n\nHost: `{OLLAMA_HOST}`\nPlease ensure Ollama is running.")
 
-if page == "Error Analytics Dashboard":
+# --- PAGE ROUTING ---
+if page == "🧪 Self-Healing Lab":
+    render_self_healing_lab()
+    st.stop()
+elif page == "🛡️ Attack Vault":
+    render_attack_vault()
+    st.stop()
+elif page == "📊 Error Analytics Dashboard":
     render_dashboard()
     st.stop()
+elif page == "📈 Security Audit & Metrics":
+    render_security_audit_logs()
+    st.stop()
+elif page == "⚙️ System & Ollama Status":
+    render_system_status()
+    st.stop()
 
-
-# Initialize Chat Memory in Session State
+# --- MAIN DEBUGGER PAGE ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -121,14 +147,15 @@ if "last_agent_log" not in st.session_state:
     st.session_state.last_agent_log = None
 if "green_metrics" not in st.session_state:
     st.session_state.green_metrics = None
+if "correlation_id" not in st.session_state:
+    st.session_state.correlation_id = generate_correlation_id()
+
 st.title("Chatbot-Driven C++ Compiler & Debugger")
-st.markdown("### Secure Coding Assistant running on Local LLM")
+st.markdown("### Samphel Secure Coding Assistant (Roll No: 25CSB1A79)")
 
 col1, col2 = st.columns(2)
 
-
 # LEFT COLUMN: THE CODE EDITOR & COMPILER
-
 with col1:
     st.subheader("📝 C++ Code Editor")
     default_code = """#include <iostream>
@@ -142,13 +169,15 @@ int main() {
     
     user_code = st.text_area("Write your C++ code here:", value=default_code, height=400)
     
-    col1_a, col1_b = st.columns([1, 3])
+    col1_a, col1_b, col1_c = st.columns([1.5, 1.5, 1.5])
     with col1_a:
         compile_btn = st.button("Compile & Analyze", type="primary")
     with col1_b:
         if st.button("🗑️ Clear Chat History"):
             st.session_state.messages = []
             st.rerun()
+    with col1_c:
+        st.caption(f"Session: `{st.session_state.correlation_id[:16]}`")
 
     if compile_btn:
         if not user_code.strip():
@@ -158,7 +187,56 @@ int main() {
             tracker = EmissionsTracker(project_name="llama3_debugger", log_level="error")
             tracker.start()
             
-            # 0. Check AI Connection
+            # 0. Security Guardrail & Threat Scan
+            threat = analyze_security_threat(user_code, context_type="code")
+            is_safe, findings = run_security_guardrail(user_code)
+            
+            if not is_safe or not threat["is_safe"]:
+                stop_and_save_metrics(tracker, start_time)
+                
+                # Determine risk parameters
+                event_type = threat["event_type"] if not threat["is_safe"] else "CODE_VULNERABILITY"
+                risk_lvl = threat["risk_level"] if not threat["is_safe"] else "HIGH"
+                risk_score = threat["risk_score"] if not threat["is_safe"] else 0.85
+                reason = threat["detection_reason"] if not threat["is_safe"] else "Critical security vulnerability detected in code."
+                
+                if findings:
+                    critical_findings = [f for f in findings if f['severity'] in ['CRITICAL', 'HIGH']]
+                    if critical_findings:
+                        reason += " " + "; ".join([f"{f['pattern']}: {f['reason']}" for f in critical_findings])
+                
+                # Persistent Security Audit Log & Attack Vault Entry
+                log_security_event(
+                    event_type=event_type,
+                    risk_level=risk_lvl,
+                    risk_score=risk_score,
+                    action="BLOCKED",
+                    detection_reason=reason,
+                    input_snippet=user_code,
+                    correlation_id=st.session_state.correlation_id,
+                    source="submitted_code"
+                )
+                
+                st.error(f"🚫 SECURITY BLOCK: {reason}")
+                st.stop()
+            else:
+                # Log allowed security event persistently
+                log_security_event(
+                    event_type="BENIGN_CHECK",
+                    risk_level="NONE",
+                    risk_score=0.0,
+                    action="ALLOWED",
+                    detection_reason="Passed all security guardrails and static analysis.",
+                    input_snippet=user_code,
+                    correlation_id=st.session_state.correlation_id,
+                    source="submitted_code"
+                )
+                
+                if findings:
+                    warning_msg = "\n".join([f"- Line {f['line']}: `{f['pattern']}` ({f['severity']}). {f['reason']} -> {f['recommendation']}" for f in findings])
+                    st.warning(f"⚠️ Security Warnings (Proceeding anyway):\n{warning_msg}")
+            
+            # 1. Check AI Connection
             with st.spinner("Checking AI connection..."):
                 is_running, has_model = check_ollama_status()
                 if not is_running:
@@ -170,19 +248,6 @@ int main() {
                     st.error(f"AI service unavailable.\nOllama is running, but the configured model `{MODEL_NAME}` is not available.\nPlease install it (e.g., `ollama pull {MODEL_NAME}`).")
                     st.stop()
             
-            # 1. Security Scan
-            is_safe, findings = run_security_guardrail(user_code)
-            
-            if not is_safe:
-                stop_and_save_metrics(tracker, start_time)
-                warning_msg = "\n".join([f"- Line {f['line']}: `{f['pattern']}` ({f['severity']}). {f['reason']}" for f in findings if f['severity'] == 'CRITICAL'])
-                st.error(f"🚫 SECURITY BLOCK: \n{warning_msg}")
-                st.stop() 
-            elif findings:
-                # Show warnings if any
-                warning_msg = "\n".join([f"- Line {f['line']}: `{f['pattern']}` ({f['severity']}). {f['reason']} -> {f['recommendation']}" for f in findings])
-                st.warning(f"⚠️ Security Warnings (Proceeding anyway):\n{warning_msg}")
-            
             # 2. Compile and Run
             with st.spinner("Compiling securely in sandbox..."):
                 st.session_state.last_agent_log = None
@@ -192,9 +257,10 @@ int main() {
                 st.session_state.last_stdout = stdout
                 st.session_state.last_stderr = stderr
                 st.session_state.last_agent_log = None
+
             # 3. Process Results
             if return_code == 0:
-                # --- PATH A: SUCCESS ---
+                # PATH A: SUCCESS
                 st.success("✅ Execution Successful!")
                 st.code(stdout, language="text")
                 
@@ -213,24 +279,21 @@ int main() {
                 st.rerun()
 
             elif return_code == 2:
-                # --- PATH B: RUNTIME ERROR (TRIGGER AGENTIC LLDB) ---
+                # PATH B: RUNTIME ERROR
                 st.error("⚠️ Runtime Crash Detected! Booting Agentic LLDB Debugger...")
                 
                 if stdout:
                     st.markdown("**Output before crash:**")
                     st.code(stdout, language="text")
                 
-                with st.spinner("🤖 AI Agent is autonomously inspecting Mac memory..."):
-                    # Catch BOTH the diagnosis and the log here
+                with st.spinner("🤖 AI Agent is autonomously inspecting memory..."):
                     final_diagnosis, agent_log = agentic_debug_loop(
                         cpp_code=user_code, 
                         crash_output=stderr, 
                         executable_path=executable
                     )
                 
-                # Save the log to session state
                 st.session_state.last_agent_log = agent_log
-                
                 initial_msg = f"**🚨 Runtime Crash Detected (e.g., SegFault)**\n\n**Agentic LLDB Diagnosis:**\n{final_diagnosis}"
                 st.session_state.messages.append({"role": "assistant", "content": initial_msg})
                 log_interaction("SYSTEM (Runtime Crash)", initial_msg, user_code, "Runtime Error")
@@ -242,7 +305,7 @@ int main() {
                 st.rerun()
                 
             else:
-                # --- PATH C: COMPILE ERROR (STATIC ANALYSIS) ---
+                # PATH C: COMPILE ERROR
                 st.error("❌ Compilation Failed! Diagnosing issue...")
                 log_error(stderr, user_code)
                 
@@ -255,13 +318,11 @@ int main() {
                 is_fix_safe, suggested_code, security_status, parsed_json = validate_ai_fix(llm_response)
                 
                 if not parsed_json:
-                    # Fallback if AI didn't output valid JSON
                     st.session_state.messages.append({"role": "assistant", "content": f"**Detected:** {classification['category']}\n\n{llm_response}"})
                     stop_and_save_metrics(tracker, start_time)
                     if temp_dir: temp_dir.cleanup()
                     st.rerun()
 
-                # Build Educational Feedback
                 feedback_msg = f"**Detected:** {classification['category']}\n\n"
                 feedback_msg += f"**What happened:** {parsed_json.get('what_happened', 'N/A')}\n\n"
                 feedback_msg += f"**Why:** {parsed_json.get('why_it_happened', 'N/A')}\n\n"
@@ -269,14 +330,12 @@ int main() {
                 feedback_msg += f"**Concept:** {parsed_json.get('concept', 'N/A')}\n\n"
                 feedback_msg += f"**Practice:** {parsed_json.get('practice_question', 'N/A')}"
                 
-                # Verified Repair Workflow
                 verification_msg = "### VERIFICATION RESULTS\n\n"
                 verification_msg += "- [x] **GENERATED:** AI proposed a repair.\n"
                 
                 if is_fix_safe:
                     verification_msg += f"- [x] **SECURITY CHECK PASSED:** {security_status}\n"
                     
-                    # Verify by compiling the suggested code
                     with st.spinner("Compiling proposed fix to verify..."):
                         fix_code, fix_out, fix_err, fix_temp_dir, fix_exe = compile_and_run(suggested_code)
                         
@@ -290,8 +349,6 @@ int main() {
                     if fix_temp_dir:
                         fix_temp_dir.cleanup()
                         
-                    # Show Code Diff
-                    import difflib
                     diff = difflib.unified_diff(
                         user_code.splitlines(),
                         suggested_code.splitlines(),
@@ -315,15 +372,28 @@ int main() {
                     feedback_msg += f"\n\n{verification_msg}"
                     st.session_state.messages.append({"role": "assistant", "content": feedback_msg})
 
+                    # Record malicious AI fix to Attack Vault
+                    record_attack(
+                        category="MALICIOUS_AI_FIX",
+                        source="ai_generated_fix",
+                        input_text=suggested_code or llm_response,
+                        risk_level="CRITICAL",
+                        detection_reason=f"AI suggested insecure code: {security_status}",
+                        risk_score=0.95,
+                        action_taken="Blocked",
+                        correlation_id=st.session_state.correlation_id,
+                        validation_status="Failed",
+                        detection_method="AI Fix Security Guardrail"
+                    )
+
                 log_interaction("SYSTEM (Compile Failed)", feedback_msg, user_code, classification['category'], suggested_code if is_fix_safe else "N/A")
-                
                 stop_and_save_metrics(tracker, start_time)
                 
-                # Cleanup temp directory
                 if temp_dir:
                     temp_dir.cleanup()
                 
                 st.rerun()
+
     if st.session_state.last_status is not None:
         st.markdown("---")
         st.subheader("🖥️ Terminal Output")
@@ -338,13 +408,12 @@ int main() {
             st.error("❌ Compilation Failed!")
             st.code(st.session_state.last_stderr, language="text")      
 
-    # AGENTIC LLDB BRAIN LOG (Only shows if Path B ran)
     if st.session_state.last_agent_log:
         st.markdown("---")
         st.subheader("🧠 Agentic LLDB Process")
         with st.expander("View AI Debugging Steps", expanded=True):
             st.markdown(st.session_state.last_agent_log) 
-        # DASHBOARD
+
     if st.session_state.green_metrics:
         st.markdown("---")
         st.subheader("🌿 Green Compiler Metrics")
@@ -353,65 +422,82 @@ int main() {
         m_col2.metric("⚡ Energy Used", f"{st.session_state.green_metrics['energy']:.6f} kWh")
         m_col3.metric("🌍 Carbon Emitted", f"{st.session_state.green_metrics['carbon']:.5f} g") 
 
-    #End of Left Column....
-
-
 # RIGHT COLUMN: THE MULTI-TURN AI CHAT
-
 with col2:
     st.subheader("💬 AI Tutor Chat")
-    
-    # Render Chat Container
     chat_container = st.container(height=500)
     
     with chat_container:
         if len(st.session_state.messages) == 0:
             st.info("Hit 'Compile & Analyze' to start the debugging session, or say hello!")
             
-        # Display all previous messages
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
                 
-                # RESTORED: Render the code expander if it exists in this specific message
                 if "code_expander" in msg:
                     with st.expander("View Verified & Corrected Code"):
                         st.code(msg["code_expander"], language="cpp")
                 
-                # Render diff if it exists
                 if "diff" in msg:
                     with st.expander("View Code Changes"):
                         st.code(msg["diff"], language="diff")
                 
-    # The Chat Input Box for Follow-up Questions
+    # Chat Input Box with Security Analysis
     if follow_up := st.chat_input("Ask a follow-up question (e.g., 'What does line 4 mean?'):"):
         
-        # 1. Display user message immediately
+        # Analyze prompt security
+        prompt_threat = analyze_security_threat(follow_up, context_type="prompt")
+        
+        if not prompt_threat["is_safe"]:
+            log_security_event(
+                event_type=prompt_threat["event_type"],
+                risk_level=prompt_threat["risk_level"],
+                risk_score=prompt_threat["risk_score"],
+                action="BLOCKED",
+                detection_reason=prompt_threat["detection_reason"],
+                input_snippet=follow_up,
+                correlation_id=st.session_state.correlation_id,
+                source="user_prompt"
+            )
+            
+            st.session_state.messages.append({"role": "user", "content": follow_up})
+            blocked_msg = f"🚫 **SECURITY BLOCK:** {prompt_threat['detection_reason']}"
+            st.session_state.messages.append({"role": "assistant", "content": blocked_msg})
+            st.rerun()
+        else:
+            log_security_event(
+                event_type="BENIGN_CHECK",
+                risk_level="NONE",
+                risk_score=0.0,
+                action="ALLOWED",
+                detection_reason="Chat prompt passed security analysis.",
+                input_snippet=follow_up,
+                correlation_id=st.session_state.correlation_id,
+                source="user_prompt"
+            )
+
         st.session_state.messages.append({"role": "user", "content": follow_up})
         with chat_container:
             with st.chat_message("user"):
                 st.markdown(follow_up)
                 
-        # 2. Build conversational context (pass the last few messages so the AI remembers)
         conversation_history = f"You are a helpful C++ tutor. The user is currently working on this C++ code:\n```cpp\n{user_code}\n```\n\nHere is the recent conversation:\n"
         for m in st.session_state.messages[-4:]: 
-            # We skip the code_expander content so we don't confuse the LLM prompt
             conversation_history += f"{m['role'].capitalize()}: {m['content']}\n"
         conversation_history += "Now, respond to the user's latest question concisely."
 
-        # 3. Get AI Response
         with chat_container:
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
                     ai_reply = get_ai_explanation(conversation_history)
                     st.markdown(ai_reply)
                     
-        # 4. Save to Memory and JSON
         st.session_state.messages.append({"role": "assistant", "content": ai_reply})
         log_interaction(
-            user_prompt=follow_up,          # The question the user just typed
-            llm_response=ai_reply,          # The AI's conversational answer
-            code_snippet=user_code,         # The code currently in the editor
+            user_prompt=follow_up,
+            llm_response=ai_reply,
+            code_snippet=user_code,
             error_category="Follow-up Chat", 
-            fixed_code="N/A"                # No strict code fix for general chat
+            fixed_code="N/A"
         )

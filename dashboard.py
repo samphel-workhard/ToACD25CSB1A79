@@ -24,7 +24,7 @@ def render_dashboard():
         st.bar_chart(error_counts)
         
         st.subheader("Recent Error Log")
-        st.dataframe(df.tail(10).iloc[::-1]) # Show last 10 in reverse chronological
+        st.dataframe(df.tail(10).iloc[::-1])
         
     else:
         st.info("No errors recorded yet.")

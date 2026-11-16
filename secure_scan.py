@@ -1,10 +1,15 @@
 import re
+from agent_security import analyze_security_threat
 
 def run_security_guardrail(code_snippet):
     """
-    Scans the provided code/text for banned C++ functions using Regex.
+    Scans the provided code/text for security threats and banned C++ functions.
+    Integrates agent_security threat detection.
     Returns: (is_safe: bool, findings: list)
     """
+    
+    # 1. First run comprehensive agent security analysis (Prompt Injection / Policy Bypass / Security Threats)
+    threat = analyze_security_threat(code_snippet, context_type="code")
     
     # 'Never-List'(Regex patterns) -> Tuple: (Severity, Reason, Recommendation)
     banned_patterns = {
@@ -55,8 +60,18 @@ def run_security_guardrail(code_snippet):
     }
 
     findings = []
-    lines = code_snippet.split('\n')
     
+    # Add threat findings if detected by agent_security
+    if not threat["is_safe"]:
+        findings.append({
+            "severity": threat["risk_level"],
+            "line": 1,
+            "pattern": threat["event_type"],
+            "reason": threat["detection_reason"],
+            "recommendation": "Remove policy bypass or prompt injection constructs."
+        })
+        
+    lines = code_snippet.split('\n')
     for i, line in enumerate(lines):
         line_num = i + 1
         for pattern, info in banned_patterns.items():
@@ -71,5 +86,5 @@ def run_security_guardrail(code_snippet):
                     "recommendation": recommendation
                 })
                 
-    is_safe = len([f for f in findings if f['severity'] == "CRITICAL"]) == 0
+    is_safe = len([f for f in findings if f['severity'] in ["CRITICAL", "HIGH"]]) == 0
     return is_safe, findings

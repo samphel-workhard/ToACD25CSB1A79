@@ -57,9 +57,8 @@ def classify_error(error_message):
 
 def get_diagnostic_prompt(classification, code):
     """
-    Generates a highly-constrained system prompt requesting JSON output for Educational Feedback.
+    Generates a system prompt requesting JSON output for Educational Feedback.
     """
-    # Create a summary of structured errors
     diag_summary = ""
     for d in classification['diagnostics']:
         diag_summary += f"- Line {d['line']}, Col {d['column']}: [{d['severity'].upper()}] {d['message']}\n"
